@@ -1,0 +1,551 @@
+/*
+    (C) Copyright 2013, Stephen M. Cameron.
+
+    This file is part of mazers-n-lasers.
+
+    mazers-n-lasers is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+
+    mazers-n-lasers is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with mazers-n-lasers; if not, write to the Free Software
+    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/time.h>
+#include <math.h>
+
+#include "libol.h"
+#include "joystick.h"
+
+#define SCREEN_WIDTH (1000.0)
+#define SCREEN_HEIGHT (1000.0)
+#define XSCALE (1.0 / (SCREEN_WIDTH / 2.0))
+#define YSCALE (-1.0 / (SCREEN_HEIGHT / 2.0))
+
+#define RED 0xFF0000
+#define GREEN 0x00FF00
+#define BLUE 0x0000FF
+
+/* Maze dimensions, in units of chars */
+#define XDIM 70
+#define YDIM 20
+
+static int xo[] = { 0, 1, 0, -1 };
+static int yo[] = { -1, 0, 1, 0 };
+
+static int playerx, playery, playerdir;
+
+static int requested_forward = 0;
+static int requested_backward = 0;
+static int requested_left = 0;
+static int requested_right = 0;
+static int attract_mode_active = 1;
+#define JOYSTICK_DEVICE "/dev/input/js0"
+static int joystick_fd = -1;
+
+/* get a random number between 0 and n-1... fast and loose algorithm.  */
+static inline int randomn(int n)
+{
+	return random() % n;
+}
+
+static float maze_density(char *maze, int xdim, int ydim)
+{
+	int i, j;
+	float total = 0.0;
+
+	for (i = 0; i < ydim; i++)
+		for (j = 0; j < xdim; j++)
+			if (maze[i * xdim + j] == '#')
+				total = total + 1.0;
+	return total / (float) (xdim * ydim);
+}
+
+static void print_maze(char *maze, int xdim, int ydim)
+{
+	int i, j;
+
+	for (i = 0; i < ydim; i++) {
+		for (j = 0; j < xdim; j++) {
+			if (i == playery && j == playerx) {
+				switch (playerdir) {
+				case 0: printf("^");
+					break;
+				case 1: printf(">");
+					break;
+				case 2: printf("v");
+					break;
+				case 3: printf("<");
+					break;
+				default:
+					printf("?");
+					break;
+				}
+			} else {
+				printf("%c", maze[i * xdim + j]);
+			}
+		}
+		printf("\n");
+	}
+}
+
+#define mazesize(xdim, ydim) \
+	(sizeof(char) * xdim * ydim)
+
+static int inbounds_for_digging(int x, int y, int xdim, int ydim)
+{
+	if (x < 1 || x >= xdim -1 || y < 1 || y >= ydim -1)
+		return 0;
+	return 1;
+}
+
+static int inbounds(int x, int y, int xdim, int ydim)
+{
+	if (x < 0 || x >= xdim || y < 0 || y >= ydim)
+		return 0;
+	return 1;
+}
+
+static int ok_to_dig(char *maze, int x, int y, int direction,
+			int xdim, int ydim)
+{
+	int left, right;
+
+	x += xo[direction];
+	y += yo[direction];
+
+	if (!inbounds_for_digging(x, y, xdim, ydim))
+		return 0;
+	if (maze[y * xdim + x] != '.')
+		return 0;
+	left = direction - 1;
+	if (left < 0)
+		left = 3;
+	if (maze[(y + yo[left]) * xdim + x + xo[left]] != '.')
+		return 0;
+	right = direction + 1;
+	if (right > 3)
+		right = 0;
+	if (maze[(y + yo[right]) * xdim + x + xo[right]] != '.')
+		return 0;
+	return 1;
+}
+
+static void dig(char *maze, int x, int y, int direction, int xdim, int ydim)
+{
+	int left, right;
+
+	maze[y * xdim + x] = '#';
+
+	if (randomn(100) < 7)
+		return;
+
+	if (ok_to_dig(maze, x, y, direction, xdim, ydim))
+		dig(maze, x + xo[direction], y + yo[direction],
+			direction, xdim, ydim);
+	if (randomn(100) < 20) {
+		left = direction - 1;
+		if (left < 0)
+			left = 3;
+		if (ok_to_dig(maze, x, y, left, xdim, ydim))
+			dig(maze, x + xo[left], y + yo[left], left, xdim, ydim);
+	}
+	if (randomn(100) < 20) {
+		right = direction + 1;
+		if (right > 3)
+			right = 0;
+		if (ok_to_dig(maze, x, y, right, xdim, ydim))
+			dig(maze, x + xo[right], y + yo[right], right, xdim, ydim);
+	}
+}
+
+static char *make_maze(int xdim, int ydim, int startx, int starty, int startdir)
+{
+	char *maze;
+	float density;
+
+	for (;;) {
+		maze = malloc(mazesize(xdim, ydim));
+		memset(maze, '.', mazesize(xdim, ydim)); 
+		dig(maze, startx, starty, startdir, xdim, ydim);
+		density = maze_density(maze, xdim, ydim);
+		if (density > 0.30)
+			break;
+		free(maze);
+	}
+	return maze;
+}
+
+static int setup_openlase(void)
+{
+	OLRenderParams params;
+
+	memset(&params, 0, sizeof params);
+	params.rate = 48000;
+	params.on_speed = 2.0/100.0;
+	params.off_speed = 2.0/20.0;
+	params.start_wait = 12;
+	params.start_dwell = 3;
+	params.curve_dwell = 0;
+	params.corner_dwell = 12;
+	params.curve_angle = cosf(30.0*(M_PI/180.0)); // 30 deg
+	params.end_dwell = 3;
+	params.end_wait = 10;
+	params.snap = 1/100000.0;
+	params.render_flags = RENDER_GRAYSCALE;
+
+	if (olInit(3, 60000) < 0) {
+		fprintf(stderr, "Failed to initialized openlase\n");
+		return -1;
+	}
+	olSetRenderParams(&params);
+
+	olLoadIdentity();
+	olTranslate(-1,1);
+	olScale(XSCALE, YSCALE);
+
+	return 0;
+}
+
+static void draw_objects(void)
+{
+}
+
+static void move_player(char *maze, int xdim, int ydim)
+{
+	static unsigned long last_move_usec = 0;
+	static unsigned long last_move_sec = 0;
+	struct timeval tv;
+	int nx, ny, nd, tx, ty;
+	int dir;
+
+	nx = playerx;
+	ny = playery;
+	nd = playerdir;
+
+	gettimeofday(&tv, NULL);
+	if (tv.tv_usec - last_move_usec < 250000 && tv.tv_sec == last_move_sec)
+		return;
+
+	if (requested_forward) {
+		tx = playerx + xo[playerdir];
+		ty = playery + yo[playerdir];
+		if (!inbounds_for_digging(tx, ty, xdim, ydim))
+			return;
+		if (maze[ty * xdim + tx] == '#') {
+			nx = tx;
+			ny = ty;
+		}
+	}
+
+	if (requested_backward) {
+		dir = playerdir + 2;
+		if (dir > 3)
+			dir -= 4;	
+		tx = playerx + xo[dir];
+		ty = playery + yo[dir];
+		if (!inbounds_for_digging(tx, ty, xdim, ydim))
+			return;
+		if (maze[ty * xdim + tx] == '#') {
+			nx = tx;
+			ny = ty;
+		}
+	}
+
+	if (requested_left) {
+		nd = playerdir - 1;
+		if (nd < 0)
+			nd = 3;
+	}
+
+	if (requested_right) {
+		nd = playerdir + 1;
+		if (nd > 3)
+			nd = 0;
+	}
+	
+	if (nx != playerx || ny != playery || nd != playerdir) {
+		playerx = nx;
+		playery = ny;
+		playerdir = nd;
+		last_move_usec = tv.tv_usec;
+		last_move_sec = tv.tv_sec;
+#if 0
+		/* activate this to debug player movement */
+		print_maze(maze, xdim, ydim);
+#endif
+	}
+}
+
+static void move_objects(char *maze, int xdim, int ydim, float elapsed_time)
+{
+	move_player(maze, xdim, ydim);
+}
+
+static void attract_mode(void)
+{
+}
+
+#define SHRINKFACTOR (0.8)
+#define BASICX 100
+#define BASICY 100
+#define NSTEPS 8
+
+static float shrinkfactor[NSTEPS] = { 0 };
+
+static float init_shrinkfactor(int n)
+{
+	int i;
+	float f = 1.0;
+
+	for (i = 0; i < n; i++) {
+		shrinkfactor[i] = f;
+		f = f * SHRINKFACTOR;
+	}
+	return f;
+}
+/* This is the cheeziest 3d dungeon renderer ever, a re-implementation of what
+ * old DOS games like Wizardry and early Ultima games did, 'cept nowadays we
+ * can use floats with impunity
+ */
+static void draw_maze(char *maze, int xdim, int ydim,
+			int playerx, int playery, int playerdir)
+{
+	int steps = NSTEPS;
+	int i, x, y, left, right;
+	int x1, y1, x2, y2;
+	int sf;
+
+	/* draw top of left wall */
+	x = playerx;
+	y = playery;
+	x1 = 0;
+	y1 = 0;
+	sf = 0;
+	x2 = x1 + BASICX * shrinkfactor[sf];
+	y2 = y1 + BASICY * shrinkfactor[sf];
+	left = playerdir - 1;
+	if (left < 0)
+		left = 3;	
+	for (i = 0; i < steps; i++) {
+		if (!inbounds(x + xo[left], y + yo[left], xdim, ydim))
+			continue;
+		if (maze[(y + yo[left]) * xdim + x + xo[left]] == '.') {
+			olLine(x1, y1, x2, y2, RED);
+		} else {
+			olLine(x1, y2, x2, y2, RED);
+			olLine(x1, SCREEN_HEIGHT - y2, x2,
+				SCREEN_HEIGHT - y2, RED);
+			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, RED);
+			olLine(x1, y1, x1, SCREEN_HEIGHT - y1, RED);
+		}
+		x += xo[playerdir];
+		y += yo[playerdir];
+		if (maze[y * xdim + x] == '.') { /* back wall */
+			olLine(x2, y2, SCREEN_WIDTH - x2, y2, RED);
+			olLine(x2, SCREEN_HEIGHT - y2,
+				SCREEN_WIDTH - x2, SCREEN_HEIGHT - y2, RED);
+
+			/* FIXME: these next 2 lines sometimes get drawn 2x */
+			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, RED);
+			olLine(SCREEN_WIDTH - x2, y2,
+				SCREEN_WIDTH - x2, SCREEN_HEIGHT - y2, RED);
+			break;
+		}
+		x1 = x2;
+		y1 = y2;
+		sf++;
+		x2 = x2 + BASICX * shrinkfactor[sf];
+		y2 = y2 + BASICY * shrinkfactor[sf];
+	}
+
+	/* draw top of right wall */
+	x = playerx;
+	y = playery;
+	x1 = SCREEN_WIDTH;
+	y1 = 0;
+	sf = 0;
+	x2 = x1 - BASICX * shrinkfactor[sf];
+	y2 = y1 + BASICY * shrinkfactor[sf];
+	right = playerdir + 1;
+	if (right > 3)
+		right = 0;	
+	for (i = 0; i < steps; i++) {
+		if (!inbounds(x + xo[right], y + yo[right], xdim, ydim))
+			continue;
+		if (maze[(y + yo[right]) * xdim + x + xo[right]] == '.') {
+			olLine(x1, y1, x2, y2, RED);
+		} else {
+			olLine(x1, y2, x2, y2, RED);
+			olLine(x1, SCREEN_HEIGHT - y2, x2,
+				SCREEN_HEIGHT - y2, RED);
+			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, RED);
+			olLine(x1, y1, x1, SCREEN_HEIGHT - y1, RED);
+		}
+		x += xo[playerdir];
+		y += yo[playerdir];
+		if (maze[y * xdim + x] == '.') /* back wall */
+			break;
+		x1 = x2;
+		y1 = y2;
+		sf++;
+		x2 = x2 - BASICX * shrinkfactor[sf];
+		y2 = y2 + BASICY * shrinkfactor[sf];
+	}
+
+	/* draw the bottom of left wall */
+	x = playerx;
+	y = playery;
+	x1 = 0;
+	y1 = SCREEN_HEIGHT;
+	sf = 0;
+	x2 = x1 + BASICX * shrinkfactor[sf];
+	y2 = y1 - BASICY * shrinkfactor[sf];
+	left = playerdir - 1;
+	if (left < 0)
+		left = 3;	
+	for (i = 0; i < steps; i++) {
+		if (!inbounds(x + xo[left], y + yo[left], xdim, ydim))
+			continue;
+		if (maze[(y + yo[left]) * xdim + x + xo[left]] == '.')
+			olLine(x1, y1, x2, y2, RED);
+		x += xo[playerdir];
+		y += yo[playerdir];
+		if (maze[y * xdim + x] == '.') /* back wall */
+			break;
+		x1 = x2;
+		y1 = y2;
+		sf++;
+		x2 = x2 + BASICX * shrinkfactor[sf];
+		y2 = y2 - BASICY * shrinkfactor[sf];
+	}
+
+	/* draw bottom of right wall */
+	x = playerx;
+	y = playery;
+	x1 = SCREEN_WIDTH;
+	y1 = SCREEN_HEIGHT;
+	sf = 0;
+	x2 = x1 - BASICX * shrinkfactor[sf];
+	y2 = y1 - BASICY * shrinkfactor[sf];
+	right = playerdir + 1;
+	if (right > 3)
+		right = 0;	
+	for (i = 0; i < steps; i++) {
+		if (!inbounds(x + xo[right], y + yo[right], xdim, ydim))
+			continue;
+		if (maze[(y + yo[right]) * xdim + x + xo[right]] == '.')
+			olLine(x1, y1, x2, y2, RED);
+		x += xo[playerdir];
+		y += yo[playerdir];
+		if (maze[y * xdim + x] == '.') /* back wall */
+			break;
+		x1 = x2;
+		y1 = y2;
+		sf++;
+		x2 = x2 - BASICX * shrinkfactor[sf];
+		y2 = y2 - BASICY * shrinkfactor[sf];
+	}
+}
+
+static void openlase_renderframe(float *elapsed_time)
+{
+	*elapsed_time = olRenderFrame(60);
+	olLoadIdentity();
+	olTranslate(-1,1);
+	olScale(XSCALE, YSCALE);
+}
+
+static void deal_with_joystick(void)
+{
+	static struct wwvi_js_event jse;
+	int *xaxis, *yaxis, rc, i;
+
+	if (joystick_fd < 0)
+		return;
+
+	xaxis = &jse.stick_x;
+        yaxis = &jse.stick_y;
+
+	memset(&jse.button[0], 0, sizeof(jse.button[0]*10));
+	rc = get_joystick_status(&jse);
+	if (rc != 0)
+		return;
+
+#define JOYSTICK_SENSITIVITY 5000
+#define XJOYSTICK_THRESHOLD 20000
+#define YJOYSTICK_THRESHOLD 20000
+
+	/* check joystick buttons */
+
+	for (i = 0; i < 11; i++) {
+		if (jse.button[i] == 1) {
+			attract_mode_active = 0;
+		}
+	}
+	if (*xaxis < -XJOYSTICK_THRESHOLD)
+		requested_left = 1;
+	else
+		requested_left = 0;
+	if (*xaxis > XJOYSTICK_THRESHOLD)
+		requested_right = 1;
+	else
+		requested_right = 0;
+	if (*yaxis < -YJOYSTICK_THRESHOLD)
+		requested_forward = 1;
+	else
+		requested_forward = 0;
+	if (*yaxis > YJOYSTICK_THRESHOLD)
+		requested_backward = 1;
+	else
+		requested_backward = 0;
+}
+
+int main(int argc, char *argv[])
+{
+	char *maze;
+	struct timeval tv;
+	float elapsed_time = 0.0;
+	int xdim = XDIM;
+	int ydim = YDIM;
+
+	init_shrinkfactor(NSTEPS);
+	gettimeofday(&tv, NULL);
+	srand(tv.tv_usec);
+
+	joystick_fd = open_joystick(JOYSTICK_DEVICE, NULL);
+	if (joystick_fd < 0)
+		printf("No joystick...");
+
+
+	playerx = xdim / 2;
+	playery = ydim - 2;
+	playerdir = 0;
+	maze = make_maze(xdim, ydim, playerx, playery, playerdir);
+	print_maze(maze, xdim, ydim);
+	printf("density = %f\n", maze_density(maze, xdim, ydim));
+
+	if (setup_openlase())
+		return -1;
+
+	for (;;) {
+		deal_with_joystick();
+		draw_maze(maze, xdim, ydim, playerx, playery, playerdir);
+		draw_objects();
+		attract_mode();
+		openlase_renderframe(&elapsed_time);
+		move_objects(maze, xdim, ydim, elapsed_time);
+	}
+	olShutdown();
+	return 0;
+}
