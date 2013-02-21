@@ -26,6 +26,8 @@
 
 #include "libol.h"
 #include "joystick.h"
+#include "my_point.h"
+#include "snis_alloc.h"
 
 #define SCREEN_WIDTH (1000.0)
 #define SCREEN_HEIGHT (1000.0)
@@ -52,6 +54,35 @@ static int requested_right = 0;
 static int attract_mode_active = 1;
 #define JOYSTICK_DEVICE "/dev/input/js0"
 static int joystick_fd = -1;
+
+struct object;
+
+typedef void (*move_function)(struct object *o, float time);
+typedef void (*draw_function)(struct object *o, int sx, int sy, float scale);
+
+#define MAXOBJS 1000
+static int nrobots = 20;
+static struct object {
+	int x, y, alive, n;
+	struct my_vect_obj *v;
+        move_function move;
+        draw_function draw;
+} o[MAXOBJS];
+static int nobjs = 0;
+struct snis_object_pool *obj_pool;
+int openlase_color = GREEN;
+int wallcolor = RED;
+
+#define SHRINKFACTOR (0.8)
+#define BASICX 100
+#define BASICY 100
+#define NSTEPS 8
+static float shrinkfactor[NSTEPS] = { 0 };
+
+struct my_point_t robot_points[] =
+#include "robot-vertices.h"
+
+struct my_vect_obj robot_vect;
 
 /* get a random number between 0 and n-1... fast and loose algorithm.  */
 static inline int randomn(int n)
@@ -217,8 +248,65 @@ static int setup_openlase(void)
 	return 0;
 }
 
-static void draw_objects(void)
+void draw_generic(struct object *o, int sx, int sy, float scale)
 {
+	int j;
+	int x1, y1, x2, y2;
+
+	if (o->v->p == NULL)
+		return;
+
+	x1 = sx + o->v->p[0].x * scale;
+	y1 = sy + o->v->p[0].y * scale;  
+
+	olBegin(OL_LINESTRIP);
+	olVertex(x1, y1, openlase_color);
+
+	for (j = 0; j < o->v->npoints - 1; j++) {
+		if (o->v->p[j+1].x == LINE_BREAK) { /* Break in the line segments. */
+			j += 2;
+			x1 = sx + o->v->p[j].x * scale;
+			y1 = sy + o->v->p[j].y * scale;  
+			olVertex(x1, y1, C_BLACK);
+		}
+		if (o->v->p[j].x == COLOR_CHANGE) {
+			/* do something here to change colors */
+			j += 1;
+			x1 = sx + o->v->p[j].x * scale;
+			y1 = sy + o->v->p[j].y * scale;  
+		}
+		x2 = sx + o->v->p[j + 1].x * scale; 
+		y2 = sy + o->v->p[j + 1].y * scale;
+		if (x1 > 0 && y2 > 0)
+			olVertex(x2, y2, openlase_color);
+		x1 = x2;
+		y1 = y2;
+	}
+	olEnd();
+}
+
+static void draw_objects(char *maze, int xdim, int ydim)
+{
+	int i, j, x, y;
+
+	x = playerx;
+	y = playery;
+
+	for (i = 0; i < NSTEPS; i++) {
+		for (j = 0; j < nobjs; j++) {
+			if (x == o[j].x && y == o[j].y) {
+				o->draw(&o[j], 500 - (250 * shrinkfactor[i]),
+						500 + 500 * shrinkfactor[i],
+						 2.0 * shrinkfactor[i]);
+			}
+		}
+		x += xo[playerdir];
+		y += yo[playerdir];
+		if (!inbounds(x, y, xdim, ydim))
+			break;
+		if (maze[y * xdim + x] == '.') /* wall */
+			break;
+	}
 }
 
 static void move_player(char *maze, int xdim, int ydim)
@@ -296,13 +384,6 @@ static void attract_mode(void)
 {
 }
 
-#define SHRINKFACTOR (0.8)
-#define BASICX 100
-#define BASICY 100
-#define NSTEPS 8
-
-static float shrinkfactor[NSTEPS] = { 0 };
-
 static float init_shrinkfactor(int n)
 {
 	int i;
@@ -341,25 +422,25 @@ static void draw_maze(char *maze, int xdim, int ydim,
 		if (!inbounds(x + xo[left], y + yo[left], xdim, ydim))
 			continue;
 		if (maze[(y + yo[left]) * xdim + x + xo[left]] == '.') {
-			olLine(x1, y1, x2, y2, RED);
+			olLine(x1, y1, x2, y2, wallcolor);
 		} else {
-			olLine(x1, y2, x2, y2, RED);
+			olLine(x1, y2, x2, y2, wallcolor);
 			olLine(x1, SCREEN_HEIGHT - y2, x2,
-				SCREEN_HEIGHT - y2, RED);
-			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, RED);
-			olLine(x1, y1, x1, SCREEN_HEIGHT - y1, RED);
+				SCREEN_HEIGHT - y2, wallcolor);
+			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, wallcolor);
+			olLine(x1, y1, x1, SCREEN_HEIGHT - y1, wallcolor);
 		}
 		x += xo[playerdir];
 		y += yo[playerdir];
 		if (maze[y * xdim + x] == '.') { /* back wall */
-			olLine(x2, y2, SCREEN_WIDTH - x2, y2, RED);
+			olLine(x2, y2, SCREEN_WIDTH - x2, y2, wallcolor);
 			olLine(x2, SCREEN_HEIGHT - y2,
-				SCREEN_WIDTH - x2, SCREEN_HEIGHT - y2, RED);
+				SCREEN_WIDTH - x2, SCREEN_HEIGHT - y2, wallcolor);
 
 			/* FIXME: these next 2 lines sometimes get drawn 2x */
-			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, RED);
+			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, wallcolor);
 			olLine(SCREEN_WIDTH - x2, y2,
-				SCREEN_WIDTH - x2, SCREEN_HEIGHT - y2, RED);
+				SCREEN_WIDTH - x2, SCREEN_HEIGHT - y2, wallcolor);
 			break;
 		}
 		x1 = x2;
@@ -384,13 +465,13 @@ static void draw_maze(char *maze, int xdim, int ydim,
 		if (!inbounds(x + xo[right], y + yo[right], xdim, ydim))
 			continue;
 		if (maze[(y + yo[right]) * xdim + x + xo[right]] == '.') {
-			olLine(x1, y1, x2, y2, RED);
+			olLine(x1, y1, x2, y2, wallcolor);
 		} else {
-			olLine(x1, y2, x2, y2, RED);
+			olLine(x1, y2, x2, y2, wallcolor);
 			olLine(x1, SCREEN_HEIGHT - y2, x2,
-				SCREEN_HEIGHT - y2, RED);
-			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, RED);
-			olLine(x1, y1, x1, SCREEN_HEIGHT - y1, RED);
+				SCREEN_HEIGHT - y2, wallcolor);
+			olLine(x2, y2, x2, SCREEN_HEIGHT - y2, wallcolor);
+			olLine(x1, y1, x1, SCREEN_HEIGHT - y1, wallcolor);
 		}
 		x += xo[playerdir];
 		y += yo[playerdir];
@@ -418,7 +499,7 @@ static void draw_maze(char *maze, int xdim, int ydim,
 		if (!inbounds(x + xo[left], y + yo[left], xdim, ydim))
 			continue;
 		if (maze[(y + yo[left]) * xdim + x + xo[left]] == '.')
-			olLine(x1, y1, x2, y2, RED);
+			olLine(x1, y1, x2, y2, wallcolor);
 		x += xo[playerdir];
 		y += yo[playerdir];
 		if (maze[y * xdim + x] == '.') /* back wall */
@@ -445,7 +526,7 @@ static void draw_maze(char *maze, int xdim, int ydim,
 		if (!inbounds(x + xo[right], y + yo[right], xdim, ydim))
 			continue;
 		if (maze[(y + yo[right]) * xdim + x + xo[right]] == '.')
-			olLine(x1, y1, x2, y2, RED);
+			olLine(x1, y1, x2, y2, wallcolor);
 		x += xo[playerdir];
 		y += yo[playerdir];
 		if (maze[y * xdim + x] == '.') /* back wall */
@@ -511,6 +592,42 @@ static void deal_with_joystick(void)
 		requested_backward = 0;
 }
 
+static void setup_vects(void)
+{
+	setup_vect(robot_vect, robot_points);
+}
+
+
+static void robot_move(__attribute__((unused)) struct object *o,
+			__attribute__((unused)) float time)
+{
+	return;
+}
+
+static void add_robots(char *maze, int xdim, int ydim, int nrobots)
+{
+	int i;
+	int x, y;
+	int r;
+
+
+	for (i = 0; i < nrobots; i++) {
+		do {
+			x = randomn(xdim);
+			y = randomn(ydim);
+		} while (maze[xdim * y + x] != '#');
+		r = snis_object_pool_alloc_obj(obj_pool);
+		nobjs++;
+		o[r].x = x;
+		o[r].y = y;
+		o[r].n = r;
+		o[r].alive = 1;
+		o[r].move = robot_move;
+		o[r].draw = draw_generic;
+		o[r].v = &robot_vect;
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	char *maze;
@@ -520,8 +637,12 @@ int main(int argc, char *argv[])
 	int ydim = YDIM;
 
 	init_shrinkfactor(NSTEPS);
+	setup_vects();
+
 	gettimeofday(&tv, NULL);
 	srand(tv.tv_usec);
+
+	snis_object_pool_setup(&obj_pool, MAXOBJS);
 
 	joystick_fd = open_joystick(JOYSTICK_DEVICE, NULL);
 	if (joystick_fd < 0)
@@ -535,13 +656,15 @@ int main(int argc, char *argv[])
 	print_maze(maze, xdim, ydim);
 	printf("density = %f\n", maze_density(maze, xdim, ydim));
 
+	add_robots(maze, xdim, ydim, nrobots);
+
 	if (setup_openlase())
 		return -1;
 
 	for (;;) {
 		deal_with_joystick();
 		draw_maze(maze, xdim, ydim, playerx, playery, playerdir);
-		draw_objects();
+		draw_objects(maze, xdim, ydim);
 		attract_mode();
 		openlase_renderframe(&elapsed_time);
 		move_objects(maze, xdim, ydim, elapsed_time);
