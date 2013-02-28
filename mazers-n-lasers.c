@@ -45,12 +45,13 @@
 static int xo[] = { 0, 1, 0, -1 };
 static int yo[] = { -1, 0, 1, 0 };
 
-static int playerx, playery, playerdir;
+static int playerx, playery, playerdir, playerlevel;
 
 static int requested_forward = 0;
 static int requested_backward = 0;
 static int requested_left = 0;
 static int requested_right = 0;
+static int requested_button_zero = 0;
 static int attract_mode_active = 1;
 #define JOYSTICK_DEVICE "/dev/input/js0"
 static int joystick_fd = -1;
@@ -60,10 +61,12 @@ struct object;
 typedef void (*move_function)(struct object *o, float time);
 typedef void (*draw_function)(struct object *o, int sx, int sy, float scale);
 
+#define LADDERS_BETWEEN_LEVELS 5 
+#define MAXLEVELS 5
 #define MAXOBJS 1000
 static int nrobots = 20;
 static struct object {
-	int x, y, alive, n;
+	int x, y, level, alive, n;
 	struct my_vect_obj *v;
         move_function move;
         draw_function draw;
@@ -81,8 +84,15 @@ static float shrinkfactor[NSTEPS] = { 0 };
 
 struct my_point_t robot_points[] =
 #include "robot-vertices.h"
-
 struct my_vect_obj robot_vect;
+
+struct my_point_t up_ladder_points[] =
+#include "up-ladder-vertices.h"
+struct my_vect_obj up_ladder_vect;
+
+struct my_point_t down_ladder_points[] =
+#include "down-ladder-vertices.h"
+struct my_vect_obj down_ladder_vect;
 
 /* get a random number between 0 and n-1... fast and loose algorithm.  */
 static inline int randomn(int n)
@@ -294,8 +304,9 @@ static void draw_objects(char *maze, int xdim, int ydim)
 
 	for (i = 0; i < NSTEPS; i++) {
 		for (j = 0; j < nobjs; j++) {
-			if (x == o[j].x && y == o[j].y) {
-				o->draw(&o[j], 500 - (250 * shrinkfactor[i]),
+			if (o[j].level == playerlevel && 
+				x == o[j].x && y == o[j].y) {
+				o->draw(&o[j], 500 - (500 * shrinkfactor[i]),
 						500 + 500 * shrinkfactor[i],
 						 2.0 * shrinkfactor[i]);
 			}
@@ -309,12 +320,40 @@ static void draw_objects(char *maze, int xdim, int ydim)
 	}
 }
 
+static void climb_ladder(char *maze)
+{
+	int i;
+
+	requested_button_zero = 0;
+	for (i = 0; i < nobjs; i++) {
+		if (o[i].level != playerlevel)
+			continue;
+		if (o[i].x != playerx)
+			continue;
+		if (o[i].y != playery)
+			continue;
+		if (o[i].v == &up_ladder_vect) {
+			if (playerlevel > 0) {
+				playerlevel--;
+				return;
+			}
+		} else {
+			if (o[i].v == &down_ladder_vect) {
+				if (playerlevel < MAXLEVELS - 1) {
+					playerlevel++;
+					return;
+				}
+			}
+		}
+	}
+}
+
 static void move_player(char *maze, int xdim, int ydim)
 {
 	static unsigned long last_move_usec = 0;
 	static unsigned long last_move_sec = 0;
 	struct timeval tv;
-	int nx, ny, nd, tx, ty;
+	int nx, ny, nd, tx, ty, i;
 	int dir;
 
 	nx = playerx;
@@ -361,6 +400,9 @@ static void move_player(char *maze, int xdim, int ydim)
 		if (nd > 3)
 			nd = 0;
 	}
+
+	if (requested_button_zero) /* climb ladder */
+		climb_ladder(maze);
 	
 	if (nx != playerx || ny != playery || nd != playerdir) {
 		playerx = nx;
@@ -574,6 +616,13 @@ static void deal_with_joystick(void)
 			attract_mode_active = 0;
 		}
 	}
+
+	if (jse.button[0] == 1) {
+		requested_button_zero = 1;
+	} else {
+		requested_button_zero = 0;
+	}
+
 	if (*xaxis < -XJOYSTICK_THRESHOLD)
 		requested_left = 1;
 	else
@@ -595,8 +644,9 @@ static void deal_with_joystick(void)
 static void setup_vects(void)
 {
 	setup_vect(robot_vect, robot_points);
+	setup_vect(up_ladder_vect, up_ladder_points);
+	setup_vect(down_ladder_vect, down_ladder_points);
 }
-
 
 static void robot_move(__attribute__((unused)) struct object *o,
 			__attribute__((unused)) float time)
@@ -604,7 +654,13 @@ static void robot_move(__attribute__((unused)) struct object *o,
 	return;
 }
 
-static void add_robots(char *maze, int xdim, int ydim, int nrobots)
+static void no_move(__attribute__((unused)) struct object *o,
+			__attribute__((unused)) float time)
+{
+	return;
+}
+
+static void add_robots(char *maze, int level, int xdim, int ydim, int nrobots)
 {
 	int i;
 	int x, y;
@@ -620,6 +676,7 @@ static void add_robots(char *maze, int xdim, int ydim, int nrobots)
 		nobjs++;
 		o[r].x = x;
 		o[r].y = y;
+		o[r].level = level;
 		o[r].n = r;
 		o[r].alive = 1;
 		o[r].move = robot_move;
@@ -628,13 +685,56 @@ static void add_robots(char *maze, int xdim, int ydim, int nrobots)
 	}
 }
 
+static void create_ladder(int x, int y, int level, struct my_vect_obj *v)
+{
+	int l;
+
+	l = snis_object_pool_alloc_obj(obj_pool);
+	nobjs++;
+	o[l].x = x;
+	o[l].y = y;
+	o[l].level = level;
+	o[l].n = l;
+	o[l].alive = 1;
+	o[l].move = no_move;
+	o[l].draw = draw_generic;
+	o[l].v = v;
+}
+
+static void create_up_ladder(int x, int y, int level)
+{
+	create_ladder(x, y, level, &up_ladder_vect);
+}
+
+static void create_down_ladder(int x, int y, int level)
+{
+	create_ladder(x, y, level, &down_ladder_vect);
+}
+
+static void add_ladders(char *uppermaze, char *lowermaze, int lowerlevel, int xdim, int ydim)
+{
+	int i, x, y;
+	int down, up;
+
+	for (i = 0; i < LADDERS_BETWEEN_LEVELS; i++) {
+		do {
+			x = randomn(xdim);
+			y = randomn(ydim) ;
+		} while (uppermaze[xdim * y + x] != '#' ||
+			lowermaze[xdim * y + x] != '#');
+		create_up_ladder(x, y, lowerlevel);
+		create_down_ladder(x, y, lowerlevel - 1); 
+	}
+}
+
 int main(int argc, char *argv[])
 {
-	char *maze;
+	char *maze[MAXLEVELS];
 	struct timeval tv;
 	float elapsed_time = 0.0;
 	int xdim = XDIM;
 	int ydim = YDIM;
+	int i;
 
 	init_shrinkfactor(NSTEPS);
 	setup_vects();
@@ -652,22 +752,27 @@ int main(int argc, char *argv[])
 	playerx = xdim / 2;
 	playery = ydim - 2;
 	playerdir = 0;
-	maze = make_maze(xdim, ydim, playerx, playery, playerdir);
-	print_maze(maze, xdim, ydim);
-	printf("density = %f\n", maze_density(maze, xdim, ydim));
+	playerlevel = 0;
+	for (i = 0; i < MAXLEVELS; i++) {
+		maze[i] = make_maze(xdim, ydim, playerx, playery, playerdir);
+		print_maze(maze[i], xdim, ydim);
+		printf("density = %f\n", maze_density(maze[i], xdim, ydim));
+		add_robots(maze[i], i, xdim, ydim, nrobots);
+	}
 
-	add_robots(maze, xdim, ydim, nrobots);
+	for (i = 0; i < MAXLEVELS - 1; i++)
+		add_ladders(maze[i], maze[i + 1], i + 1, xdim, ydim);
 
 	if (setup_openlase())
 		return -1;
 
 	for (;;) {
 		deal_with_joystick();
-		draw_maze(maze, xdim, ydim, playerx, playery, playerdir);
-		draw_objects(maze, xdim, ydim);
+		draw_maze(maze[playerlevel], xdim, ydim, playerx, playery, playerdir);
+		draw_objects(maze[playerlevel], xdim, ydim);
 		attract_mode();
 		openlase_renderframe(&elapsed_time);
-		move_objects(maze, xdim, ydim, elapsed_time);
+		move_objects(maze[playerlevel], xdim, ydim, elapsed_time);
 	}
 	olShutdown();
 	return 0;
