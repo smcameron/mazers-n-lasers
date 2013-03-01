@@ -123,6 +123,10 @@ struct my_point_t down_ladder_points[] =
 #include "down-ladder-vertices.h"
 struct my_vect_obj down_ladder_vect;
 
+struct my_point_t logo_points[] =
+#include "logo-vertices.h"
+struct my_vect_obj logo_vect;
+
 /* get a random number between 0 and n-1... fast and loose algorithm.  */
 static inline int randomn(int n)
 {
@@ -287,41 +291,46 @@ static int setup_openlase(void)
 	return 0;
 }
 
-void draw_generic(struct object *o, int sx, int sy, float scale)
+void draw_vect(struct my_vect_obj *v, int sx, int sy, float scale)
 {
 	int j;
 	int x1, y1, x2, y2;
 
-	if (o->v->p == NULL)
+	if (v->p == NULL)
 		return;
 
-	x1 = sx + o->v->p[0].x * scale;
-	y1 = sy + o->v->p[0].y * scale;  
+	x1 = sx + v->p[0].x * scale;
+	y1 = sy + v->p[0].y * scale;  
 
 	olBegin(OL_LINESTRIP);
 	olVertex(x1, y1, openlase_color);
 
-	for (j = 0; j < o->v->npoints - 1; j++) {
-		if (o->v->p[j+1].x == LINE_BREAK) { /* Break in the line segments. */
+	for (j = 0; j < v->npoints - 1; j++) {
+		if (v->p[j+1].x == LINE_BREAK) { /* Break in the line segments. */
 			j += 2;
-			x1 = sx + o->v->p[j].x * scale;
-			y1 = sy + o->v->p[j].y * scale;  
+			x1 = sx + v->p[j].x * scale;
+			y1 = sy + v->p[j].y * scale;  
 			olVertex(x1, y1, C_BLACK);
 		}
-		if (o->v->p[j].x == COLOR_CHANGE) {
+		if (v->p[j].x == COLOR_CHANGE) {
 			/* do something here to change colors */
 			j += 1;
-			x1 = sx + o->v->p[j].x * scale;
-			y1 = sy + o->v->p[j].y * scale;  
+			x1 = sx + v->p[j].x * scale;
+			y1 = sy + v->p[j].y * scale;  
 		}
-		x2 = sx + o->v->p[j + 1].x * scale; 
-		y2 = sy + o->v->p[j + 1].y * scale;
+		x2 = sx + v->p[j + 1].x * scale; 
+		y2 = sy + v->p[j + 1].y * scale;
 		if (x1 > 0 && y2 > 0)
 			olVertex(x2, y2, openlase_color);
 		x1 = x2;
 		y1 = y2;
 	}
 	olEnd();
+}
+
+void draw_generic(struct object *o, int sx, int sy, float scale)
+{
+	draw_vect(o->v, sx, sy, scale);
 }
 
 static void draw_objects(char *maze, int xdim, int ydim)
@@ -459,6 +468,18 @@ static void move_objects(char *maze, int xdim, int ydim, float elapsed_time)
 
 static void attract_mode(void)
 {
+	static float thetime = 0.0;
+	float sf;
+	if (!attract_mode_active)
+		return;
+
+	thetime += 0.02;
+	if (thetime > M_PI * 2.0)
+		thetime -= M_PI * 2.0;
+
+	sf = (sinf(thetime) + 1.0) / 2.2; 
+	draw_vect(&logo_vect, 500 - 500 * sf,
+			500 + 500 * sf, 2 * sf);
 }
 
 static float init_shrinkfactor(int n)
@@ -686,6 +707,7 @@ static void setup_vects(void)
 	setup_vect(firstaidkit_vect, firstaidkit_points);
 	setup_vect(laserpistol_vect, laserpistol_points);
 	setup_vect(grenade_vect, grenade_points);
+	setup_vect(logo_vect, logo_points);
 }
 
 static void robot_move(struct object *o, char *maze, float time)
@@ -926,9 +948,13 @@ int main(int argc, char *argv[])
 
 	for (;;) {
 		deal_with_joystick();
+		if (attract_mode_active) {
+			attract_mode();
+			openlase_renderframe(&elapsed_time);
+			continue;
+		}
 		draw_maze(maze[playerlevel], xdim, ydim, playerx, playery, playerdir);
 		draw_objects(maze[playerlevel], xdim, ydim);
-		attract_mode();
 		openlase_renderframe(&elapsed_time);
 		move_objects(maze[playerlevel], xdim, ydim, elapsed_time);
 	}
