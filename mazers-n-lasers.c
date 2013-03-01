@@ -70,7 +70,7 @@ static int joystick_fd = -1;
 
 struct object;
 
-typedef void (*move_function)(struct object *o, float time);
+typedef void (*move_function)(struct object *o, char *maze, float time);
 typedef void (*draw_function)(struct object *o, int sx, int sy, float scale);
 
 #define LADDERS_BETWEEN_LEVELS 5 
@@ -82,6 +82,8 @@ static struct object {
 	struct my_vect_obj *v;
         move_function move;
         draw_function draw;
+	float time_since_last_move;
+	int direction;
 } o[MAXOBJS];
 static int nobjs = 0;
 struct snis_object_pool *obj_pool;
@@ -431,7 +433,13 @@ static void move_player(char *maze, int xdim, int ydim)
 
 static void move_objects(char *maze, int xdim, int ydim, float elapsed_time)
 {
+	int i;
+
 	move_player(maze, xdim, ydim);
+	
+	for (i = 0; i < nobjs; i++) {
+		o[i].move(&o[i], maze, elapsed_time);
+	}
 }
 
 static void attract_mode(void)
@@ -662,13 +670,48 @@ static void setup_vects(void)
 	setup_vect(down_ladder_vect, down_ladder_points);
 }
 
-static void robot_move(__attribute__((unused)) struct object *o,
-			__attribute__((unused)) float time)
+static void robot_move(struct object *o, char *maze, float time)
 {
-	return;
+	int nx, ny;
+	int count = 0;
+	static float robot_move_time = 1.0;
+
+	o->time_since_last_move += time;
+
+	if (o->time_since_last_move < robot_move_time)
+		return;
+
+	o->time_since_last_move = 0.0;
+
+	do {
+		count++;
+
+		if (count > 10) {
+			nx = o->x;
+			ny = o->y;
+			break;
+		}
+
+		nx = o->x + xo[o->direction];
+		ny = o->y + yo[o->direction];
+
+		if (!inbounds(nx, ny, XDIM, YDIM)) {
+			o->direction = randomn(4);
+			continue;
+		}
+
+		if (maze[ny * XDIM + nx] != '#') {
+			o->direction = randomn(4);
+			continue;
+		}
+		break;
+	} while (1);
+	o->x = nx;
+	o->y = ny;
 }
 
 static void no_move(__attribute__((unused)) struct object *o,
+			__attribute__((unused)) char *maze,
 			__attribute__((unused)) float time)
 {
 	return;
