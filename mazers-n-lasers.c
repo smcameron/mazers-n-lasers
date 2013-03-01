@@ -77,6 +77,7 @@ typedef void (*draw_function)(struct object *o, int sx, int sy, float scale);
 #define MAXLEVELS 5
 #define MAXOBJS 1000
 static int nrobots = 20;
+static int nfirstaidkits = 20;
 static struct object {
 	int x, y, level, alive, n;
 	struct my_vect_obj *v;
@@ -99,6 +100,10 @@ static float shrinkfactor[NSTEPS] = { 0 };
 struct my_point_t robot_points[] =
 #include "robot-vertices.h"
 struct my_vect_obj robot_vect;
+
+struct my_point_t firstaidkit_points[] =
+#include "first-aid-vertices.h"
+struct my_vect_obj firstaidkit_vect;
 
 struct my_point_t up_ladder_points[] =
 #include "up-ladder-vertices.h"
@@ -668,6 +673,7 @@ static void setup_vects(void)
 	setup_vect(robot_vect, robot_points);
 	setup_vect(up_ladder_vect, up_ladder_points);
 	setup_vect(down_ladder_vect, down_ladder_points);
+	setup_vect(firstaidkit_vect, firstaidkit_points);
 }
 
 static void robot_move(struct object *o, char *maze, float time)
@@ -715,6 +721,28 @@ static void no_move(__attribute__((unused)) struct object *o,
 			__attribute__((unused)) float time)
 {
 	return;
+}
+
+static void add_firstaidkits(char *maze, int level, int xdim, int ydim, int n)
+{
+	int i, x, y, r;
+
+	for (i = 0; i < n; i++) {
+		do {
+			x = randomn(xdim);
+			y = randomn(ydim);
+		} while (maze[xdim * y + x] != '#');
+		r = snis_object_pool_alloc_obj(obj_pool);
+		nobjs++;
+		o[r].x = x;
+		o[r].y = y;
+		o[r].level = level;
+		o[r].n = r;
+		o[r].alive = 1;
+		o[r].move = no_move;
+		o[r].draw = draw_generic;
+		o[r].v = &firstaidkit_vect;
+	}
 }
 
 static void add_robots(char *maze, int level, int xdim, int ydim, int nrobots)
@@ -828,6 +856,7 @@ int main(int argc, char *argv[])
 		print_maze(maze[i], xdim, ydim);
 		printf("density = %f\n", maze_density(maze[i], xdim, ydim));
 		add_robots(maze[i], i, xdim, ydim, nrobots);
+		add_firstaidkits(maze[i], i, xdim, ydim, nfirstaidkits);
 	}
 
 	for (i = 0; i < MAXLEVELS - 1; i++)
