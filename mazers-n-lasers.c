@@ -37,6 +37,18 @@
 #define RED 0xFF0000
 #define GREEN 0x00FF00
 #define BLUE 0x0000FF
+#define CYAN (BLUE | GREEN) 
+#define MAGENTA (RED | BLUE)
+#define YELLOW (RED | GREEN)
+
+static int levelcolor[] = {
+	RED,
+	BLUE,
+	CYAN,
+	YELLOW,
+	MAGENTA,
+	GREEN,
+};
 
 /* Maze dimensions, in units of chars */
 #define XDIM 70
@@ -74,7 +86,7 @@ static struct object {
 static int nobjs = 0;
 struct snis_object_pool *obj_pool;
 int openlase_color = GREEN;
-int wallcolor = RED;
+int wallcolor = GREEN;
 
 #define SHRINKFACTOR (0.8)
 #define BASICX 100
@@ -448,6 +460,8 @@ static void draw_maze(char *maze, int xdim, int ydim,
 	int i, x, y, left, right;
 	int x1, y1, x2, y2;
 	int sf;
+
+	wallcolor = levelcolor[playerlevel];
 
 	/* draw top of left wall */
 	x = playerx;
