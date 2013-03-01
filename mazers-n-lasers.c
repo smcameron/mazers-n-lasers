@@ -79,6 +79,7 @@ typedef void (*draw_function)(struct object *o, int sx, int sy, float scale);
 static int nrobots = 20;
 static int nfirstaidkits = 20;
 static int nlaserpistols = 3;
+static int ngrenades = 3;
 static struct object {
 	int x, y, level, alive, n;
 	struct my_vect_obj *v;
@@ -109,6 +110,10 @@ struct my_vect_obj firstaidkit_vect;
 struct my_point_t laserpistol_points[] =
 #include "laser-pistol-vertices.h"
 struct my_vect_obj laserpistol_vect;
+
+struct my_point_t grenade_points[] =
+#include "grenade-vertices.h"
+struct my_vect_obj grenade_vect;
 
 struct my_point_t up_ladder_points[] =
 #include "up-ladder-vertices.h"
@@ -680,6 +685,7 @@ static void setup_vects(void)
 	setup_vect(down_ladder_vect, down_ladder_points);
 	setup_vect(firstaidkit_vect, firstaidkit_points);
 	setup_vect(laserpistol_vect, laserpistol_points);
+	setup_vect(grenade_vect, grenade_points);
 }
 
 static void robot_move(struct object *o, char *maze, float time)
@@ -772,6 +778,29 @@ static void add_laserpistols(char *maze, int level, int xdim, int ydim, int n)
 		o[r].v = &laserpistol_vect;
 	}
 }
+
+static void add_grenades(char *maze, int level, int xdim, int ydim, int n)
+{
+	int i, x, y, r;
+
+	for (i = 0; i < n; i++) {
+		do {
+			x = randomn(xdim);
+			y = randomn(ydim);
+		} while (maze[xdim * y + x] != '#');
+		r = snis_object_pool_alloc_obj(obj_pool);
+		nobjs++;
+		o[r].x = x;
+		o[r].y = y;
+		o[r].level = level;
+		o[r].n = r;
+		o[r].alive = 1;
+		o[r].move = no_move;
+		o[r].draw = draw_generic;
+		o[r].v = &grenade_vect;
+	}
+}
+
 
 static void add_robots(char *maze, int level, int xdim, int ydim, int nrobots)
 {
@@ -886,6 +915,7 @@ int main(int argc, char *argv[])
 		add_robots(maze[i], i, xdim, ydim, nrobots);
 		add_firstaidkits(maze[i], i, xdim, ydim, nfirstaidkits);
 		add_laserpistols(maze[i], i, xdim, ydim, nlaserpistols);
+		add_grenades(maze[i], i, xdim, ydim, ngrenades);
 	}
 
 	for (i = 0; i < MAXLEVELS - 1; i++)
