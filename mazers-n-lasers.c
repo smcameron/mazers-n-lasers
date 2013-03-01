@@ -727,8 +727,9 @@ static void create_down_ladder(int x, int y, int level)
 
 static void add_ladders(char *uppermaze, char *lowermaze, int lowerlevel, int xdim, int ydim)
 {
-	int i, x, y;
+	int i, j, x, y;
 	int down, up;
+	int bad_spot;
 
 	for (i = 0; i < LADDERS_BETWEEN_LEVELS; i++) {
 		do {
@@ -736,6 +737,18 @@ static void add_ladders(char *uppermaze, char *lowermaze, int lowerlevel, int xd
 			y = randomn(ydim) ;
 		} while (uppermaze[xdim * y + x] != '#' ||
 			lowermaze[xdim * y + x] != '#');
+
+		bad_spot = 0;
+		for (j = 0; j < nobjs; j++) {
+			if (x == o[j].x && y == o[j].y &&
+				(o[j].level == lowerlevel || 
+				o[j].level == lowerlevel - 1)) {
+				bad_spot = 1;
+				break;
+			}
+		}
+		if (bad_spot)
+			continue;
 		create_up_ladder(x, y, lowerlevel);
 		create_down_ladder(x, y, lowerlevel - 1); 
 	}
