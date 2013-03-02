@@ -501,7 +501,7 @@ static void attract_mode(void)
 	if (thetime > M_PI * 2.0)
 		thetime -= M_PI * 2.0;
 
-	sf = (sinf(thetime) + 1.0) / 2.2; 
+	sf = (1.0 + sinf(thetime) + 1.0) / 4.2; 
 	draw_vect(&logo_vect, 500 - 500 * sf,
 			500 + 500 * sf, 2 * sf);
 	update_linecolor();
