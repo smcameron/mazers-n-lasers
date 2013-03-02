@@ -41,6 +41,7 @@
 #define MAGENTA (RED | BLUE)
 #define YELLOW (RED | GREEN)
 
+
 static int levelcolor[] = {
 	RED,
 	BLUE,
@@ -92,6 +93,7 @@ static int nobjs = 0;
 struct snis_object_pool *obj_pool;
 int openlase_color = GREEN;
 int wallcolor = GREEN;
+static float colorangle = 0.0;
 
 #define SHRINKFACTOR (0.8)
 #define BASICX 100
@@ -466,6 +468,28 @@ static void move_objects(char *maze, int xdim, int ydim, float elapsed_time)
 	}
 }
 
+static int update_color(float phase, float factor)
+{
+  float ca;
+
+  ca = colorangle * M_PI / 180.0;
+  
+  return ((int) ((sin(factor * ca + phase) + 1.0) * 128.0)) ;
+}
+
+static void update_linecolor(void)
+{
+	unsigned char r, g, b;
+    
+	colorangle += 0.05;
+	if (colorangle > 360.0)
+		colorangle -= 360.0;
+	r = update_color(0, 3.0);
+	g = update_color(2.0 * M_PI / 3.0, 3);
+	b = update_color(4.0 * M_PI / 3.0, 7);
+	openlase_color = (r << 16) | (g << 8) | b; 
+}
+
 static void attract_mode(void)
 {
 	static float thetime = 0.0;
@@ -480,6 +504,7 @@ static void attract_mode(void)
 	sf = (sinf(thetime) + 1.0) / 2.2; 
 	draw_vect(&logo_vect, 500 - 500 * sf,
 			500 + 500 * sf, 2 * sf);
+	update_linecolor();
 }
 
 static float init_shrinkfactor(int n)
